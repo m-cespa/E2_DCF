@@ -1,7 +1,7 @@
 from dls_automator import DLS
 
 # creating graphs and tau values
-dls = DLS(dir='DLS_files/0.75micro_100dil')
+dls = DLS(dir='DLS_files/1.00micro_1000dil')
 dls.AutoCorrelation()
 
 # calculating q values and errors
