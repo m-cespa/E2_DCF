@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from scipy.optimize import leastsq
 from matplotlib.widgets import SpanSelector
+from scipy.signal import find_peaks
 
 kB = 1.38e-23  # Boltzmann constant (J/K)
 T = 298         # Temperature (K)
@@ -204,75 +205,78 @@ class DDM_Fourier:
         plt.legend()
         plt.show()
 
-    def BallisticCorrelation(self, ISF, tmax=-1):
+    def fourier_transform_temporal(self, ISF):
         """
-        Perform the Ballistic correlation for the given ISF.
-        The fitting function is modified for ballistic motion.
+        Compute the Fourier transform of ISF along the time axis to extract velocity information.
+        Identifies the peak frequencies corresponding to ±q·v.
         """
-        # Logarithmic form of the ISF function for Ballistic motion
-        LogISF = lambda p, dts: np.log(p[0] * (1 - (np.sin(dts / p[2]) / (dts / p[2]))) + p[1])
+        # Ensure ISF is computed
+        if not hasattr(self, 'isf'):
+            raise ValueError("ISF must be calculated first. Run `calculate_isf` method.")
 
-        # Initialize parameter array
-        params = np.zeros((ISF.shape[-1], 3))
-        for iq, ddm in enumerate(ISF[:tmax].T):
-            params[iq] = leastsq(
-                lambda p, dts, logd: LogISF(p, dts) - logd,  # Function to minimize
-                [np.ptp(ISF), ddm.min(), 1],  # Initial parameters
-                args=(self.dts[:tmax], np.log(ddm))  # Data on which to perform minimization
-            )[0]
+        # Apply FFT along time axis
+        ft_isf = np.fft.fft(ISF, axis=0)
+        freqs = np.fft.fftfreq(len(self.dts), d=self.dts[1] - self.dts[0])  # Temporal frequencies
 
-        # Initialize selection range
-        iqmin, iqmax = 0, len(self.qs) - 1
+        # Shift the frequencies for correct ordering
+        ft_isf_shifted = np.fft.fftshift(ft_isf, axes=0)
+        freqs_shifted = np.fft.fftshift(freqs)
 
-        # Create plot for the Ballistic correlation
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.plot(self.qs, params[:, 2], 'o', label="Data")
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.set_xlabel(r'$q\ [\mu m^{-1}]$')
-        ax.set_ylabel(r'Characteristic time $\tau_c\ [s]$')
-        ax.set_title('Click and drag to select a valid range of q values')
+        # Compute the magnitude spectrum
+        abs_spectrum = np.abs(ft_isf_shifted)
 
-        # Annotation for velocity and alpha
-        velocity_text = ax.text(0.05, 0.95, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
-        alpha_text = ax.text(0.05, 0.90, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
+        # Find peaks in positive and negative frequency ranges
+        peak_indices_pos = []
+        peak_indices_neg = []
+        peak_freqs_pos = []
+        peak_freqs_neg = []
 
-        def onselect(xmin, xmax):
-            nonlocal iqmin, iqmax  # Avoid using global variables
+        for i, q in enumerate(self.qs):
+            spectrum_1d = abs_spectrum[:, i]
 
-            # Convert selected range to indices
-            iqmin = np.searchsorted(self.qs, xmin)
-            iqmax = min(np.searchsorted(self.qs, xmax), len(self.qs) - 1)  # Prevent out-of-bounds
+            # Identify peaks in the full spectrum
+            peaks, _ = find_peaks(spectrum_1d)
 
-            print(f"Selected range: {self.qs[iqmin]:.2f} to {self.qs[iqmax]:.2f}")
+            # Separate positive and negative peaks
+            pos_peaks = [p for p in peaks if freqs_shifted[p] > 0]
+            neg_peaks = [p for p in peaks if freqs_shifted[p] < 0]
 
-            # Perform least squares fits for the velocity
-            fit_params = leastsq(
-                lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
-                [1, 2],
-                args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2])
-            )[0]
+            # Store the most prominent peak in each region (if any)
+            if pos_peaks:
+                max_pos = max(pos_peaks, key=lambda p: spectrum_1d[p])
+                peak_indices_pos.append(max_pos)
+                peak_freqs_pos.append(freqs_shifted[max_pos])
+            else:
+                peak_indices_pos.append(None)
+                peak_freqs_pos.append(None)
 
-            # Extract velocity from the fitting parameters
-            velocity = fit_params[1]
+            if neg_peaks:
+                max_neg = max(neg_peaks, key=lambda p: spectrum_1d[p])
+                peak_indices_neg.append(max_neg)
+                peak_freqs_neg.append(freqs_shifted[max_neg])
+            else:
+                peak_indices_neg.append(None)
+                peak_freqs_neg.append(None)
 
-            # Calculate alpha for ballistic motion (which is generally 1 - absolute value of 1)
-            alpha = 1 - np.abs(fit_params[1])
+        # Plot the velocity spectrum (absolute value)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(abs_spectrum.T, aspect='auto', extent=[freqs_shifted[0], freqs_shifted[-1], self.qs[-1], self.qs[0]], cmap='hot')
+        plt.colorbar(label='|Fourier(ISF)|')
+        plt.xlabel('Frequency [Hz]')
+        plt.ylabel('Spatial Frequency q [$\mu m^{-1}$]')
+        plt.title('Velocity Spectrum from Fourier Transform')
 
-            # Update annotation text for velocity and alpha
-            velocity_text.set_text(rf"Velocity $v = {velocity:.2f}$ µm²/s")
-            alpha_text.set_text(rf"$\alpha = {alpha:.2f}$")
-
-            # Redraw the plot to update the text
-            plt.draw()
-
-            # Plot the fitted line
-            ax.plot([self.qs[iqmin], self.qs[iqmax]], 1 / (velocity * np.array([self.qs[iqmin], self.qs[iqmax]])), '-r')
-
-        # Enable interactive selection
-        span = SpanSelector(ax, onselect, 'horizontal', useblit=True, interactive=True, props=dict(alpha=0.5, facecolor='red'))
+        # Mark detected peaks
+        for i, (pos, neg) in enumerate(zip(peak_indices_pos, peak_indices_neg)):
+            if pos is not None:
+                plt.scatter(freqs_shifted[pos], self.qs[i], color='cyan', marker='o', label="+q·v" if i == 0 else "")
+            if neg is not None:
+                plt.scatter(freqs_shifted[neg], self.qs[i], color='lime', marker='o', label="-q·v" if i == 0 else "")
 
         plt.legend()
         plt.show()
+
+        return freqs_shifted, ft_isf_shifted, peak_freqs_pos, peak_freqs_neg
+
 
 
