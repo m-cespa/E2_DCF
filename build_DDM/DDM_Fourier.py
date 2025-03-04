@@ -7,6 +7,7 @@ from matplotlib.colors import LogNorm
 from scipy.optimize import leastsq
 from matplotlib.widgets import SpanSelector
 from scipy.signal import find_peaks
+from scipy.signal import butter, filtfilt
 
 kB = 1.38e-23  # Boltzmann constant (J/K)
 T = 298         # Temperature (K)
@@ -69,6 +70,10 @@ class DDM_Fourier:
         avgFFT = np.zeros(self.frames.shape[1:])
         failed = 0
         for t in initialTimes:
+            if t + dframes > self.frame_count - 1:
+                failed += 1
+                continue
+
             t = np.floor(t).astype(int)
 
             im0 = self.frames[t]
@@ -137,16 +142,21 @@ class DDM_Fourier:
             plt.savefig(f'{self.particle_size}μm_{self.fps}fps_ISFHeatmap.png')
             plt.show()
     
-    def BrownianCorrelation(self, ISF, tmax=-1):
+    def BrownianCorrelation(self, ISF, tmax=-1, beta_guess:float=1.):
         # Logarithmic form of the ISF function
-        LogISF = lambda p, dts: np.log(np.maximum(p[0] * (1 - np.exp(-dts / p[2])) + p[1], 1e-10))
+        # take max value between evaluated log and 1e-10 to avoid 0 error in log
+        # p_0 = A(q), p_1 = B(q), p_2 = tau(q)
+        LogISF = lambda p, dts: np.log(np.maximum(p[0] * (1 - np.exp(-dts**beta_guess / p[2])) + p[1], 1e-10))
 
         # Initialize parameter array
+        # intialise A(q) = peak-to-peak range of ISF
+        #           B(q) = min value of ISF
+        #           tau  = 1
         params = np.zeros((ISF.shape[-1], 3))
         for iq, ddm in enumerate(ISF[:tmax].T):
             params[iq] = leastsq(
                 lambda p, dts, logd: LogISF(p, dts) - logd,  # Function to minimize
-                [np.ptp(ISF), ddm.min(), 1],  # Initial parameters
+                [np.ptp(ISF), ddm.min(), 1],  # initial parameter values (p to sub into LogISF)
                 args=(self.dts[:tmax], np.log(ddm))  # Data on which to perform minimization
             )[0]
 
@@ -178,8 +188,8 @@ class DDM_Fourier:
             # Perform least squares fits for α and D
             fit_params = leastsq(
                 lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
-                [1, 2],
-                args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2])
+                [1, 2], # initial parameter guesses for log(D) and alpha
+                args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2]) # params[:, 2] is Dq^2 fit
             )[0]
             alpha = fit_params[1]
 
@@ -205,78 +215,233 @@ class DDM_Fourier:
         plt.legend()
         plt.show()
 
-    def fourier_transform_temporal(self, ISF):
-        """
-        Compute the Fourier transform of ISF along the time axis to extract velocity information.
-        Identifies the peak frequencies corresponding to ±q·v.
-        """
-        # Ensure ISF is computed
-        if not hasattr(self, 'isf'):
-            raise ValueError("ISF must be calculated first. Run `calculate_isf` method.")
+    def BrownianCorrelationSubDiffusive(self, ISF, tmax=-1, q_fixed:float=1.):
+        B_q = ISF[0, :]
+        A_q = ISF[-1, :] - B_q
+        ISF_normalized = (ISF - B_q) / A_q
+        autocorrelation = 1 - ISF_normalized
 
-        # Apply FFT along time axis
-        ft_isf = np.fft.fft(ISF, axis=0)
-        freqs = np.fft.fftfreq(len(self.dts), d=self.dts[1] - self.dts[0])  # Temporal frequencies
-
-        # Shift the frequencies for correct ordering
-        ft_isf_shifted = np.fft.fftshift(ft_isf, axes=0)
-        freqs_shifted = np.fft.fftshift(freqs)
-
-        # Compute the magnitude spectrum
-        abs_spectrum = np.abs(ft_isf_shifted)
-
-        # Find peaks in positive and negative frequency ranges
-        peak_indices_pos = []
-        peak_indices_neg = []
-        peak_freqs_pos = []
-        peak_freqs_neg = []
-
-        for i, q in enumerate(self.qs):
-            spectrum_1d = abs_spectrum[:, i]
-
-            # Identify peaks in the full spectrum
-            peaks, _ = find_peaks(spectrum_1d)
-
-            # Separate positive and negative peaks
-            pos_peaks = [p for p in peaks if freqs_shifted[p] > 0]
-            neg_peaks = [p for p in peaks if freqs_shifted[p] < 0]
-
-            # Store the most prominent peak in each region (if any)
-            if pos_peaks:
-                max_pos = max(pos_peaks, key=lambda p: spectrum_1d[p])
-                peak_indices_pos.append(max_pos)
-                peak_freqs_pos.append(freqs_shifted[max_pos])
-            else:
-                peak_indices_pos.append(None)
-                peak_freqs_pos.append(None)
-
-            if neg_peaks:
-                max_neg = max(neg_peaks, key=lambda p: spectrum_1d[p])
-                peak_indices_neg.append(max_neg)
-                peak_freqs_neg.append(freqs_shifted[max_neg])
-            else:
-                peak_indices_neg.append(None)
-                peak_freqs_neg.append(None)
-
-        # Plot the velocity spectrum (absolute value)
+        log_log_auto = np.log(-np.log(autocorrelation))
+        
+        # Find the closest index corresponding to the selected q_fixed
+        q_index = np.argmin(np.abs(self.qs - q_fixed))
+        log_log_auto_q = log_log_auto[:, q_index]
+                
+        # Plot log_auto vs time on a logarithmic axis
         plt.figure(figsize=(8, 6))
-        plt.imshow(abs_spectrum.T, aspect='auto', extent=[freqs_shifted[0], freqs_shifted[-1], self.qs[-1], self.qs[0]], cmap='hot')
-        plt.colorbar(label='|Fourier(ISF)|')
-        plt.xlabel('Frequency [Hz]')
-        plt.ylabel('Spatial Frequency q [$\mu m^{-1}$]')
-        plt.title('Velocity Spectrum from Fourier Transform')
-
-        # Mark detected peaks
-        for i, (pos, neg) in enumerate(zip(peak_indices_pos, peak_indices_neg)):
-            if pos is not None:
-                plt.scatter(freqs_shifted[pos], self.qs[i], color='cyan', marker='o', label="+q·v" if i == 0 else "")
-            if neg is not None:
-                plt.scatter(freqs_shifted[neg], self.qs[i], color='lime', marker='o', label="-q·v" if i == 0 else "")
-
+        plt.plot(self.dts[:tmax], log_log_auto_q[:tmax], label=f"q = {self.qs[q_index]:.2f} µm⁻¹", color='blue')
+                
+        # Set the plot labels and title
+        plt.xlabel('log(t)')
+        plt.ylabel('log(log(Autocorrelation))')
+        plt.title(f'log(log(gamma)) vs log(t) for q = {self.qs[q_index]:.2f} µm⁻¹')
+        
+        # Display the plot
         plt.legend()
         plt.show()
 
-        return freqs_shifted, ft_isf_shifted, peak_freqs_pos, peak_freqs_neg
+    def FFT_temporal(self, ISF, q_selected):
+        """
+        Compute the Fourier transform of ISF along the time axis to extract velocity information.
+        Identifies peaks above a threshold value and calculates <v_terminal> for each peak, 
+        then averages the velocities and prints the result.
+        """
+        # Step 1: Extract B(q) from the t = 0 intercept for each q
+        B_q = ISF[0, :]  # ISF at t=0 gives B(q) for each q
+        
+        # Step 2: Extract A(q) using the long-time behavior
+        A_q = ISF[-1, :] - B_q  # Assuming ISF(t -> infinity) is approximated by ISF at large t
+        
+        # Step 3: Recover 1 - (ISF - B(q)) / A(q)
+        ISF_normalized = (ISF - B_q) / A_q  # Normalized ISF without the static component
+        
+        # Step 4: Calculate exp(-t q^2 D) cos(q dot v t) by 1 - the normalized ISF
+        exp_cos_component = 1 - ISF_normalized  # This is exp(-t q^2 D) cos(q dot v t)
+
+        # Get the index of the smallest non-zero q
+        q_idx = np.argmin(np.abs(self.qs - q_selected))
+
+        # Plot the original renormalized autocorrelation
+        plt.figure(figsize=(8, 6))
+        plt.plot(self.dts, exp_cos_component[:, q_idx])
+        plt.xlabel('Time [s]')
+        plt.ylabel('Gamma(t, q_selected)')
+        plt.title(f'Renormalized Autocorrelation q = {self.qs[q_idx]} μm$^{{-1}}$')
+        plt.grid(True)
+        plt.show()
+        
+        # Band-stop filter design (40-50 Hz for mains noise)
+        def band_stop_filter(dts, low_cutoff, high_cutoff, fs):
+            # Design a band-stop filter using butterworth
+            nyquist = 0.5 * fs
+            low = low_cutoff / nyquist
+            high = high_cutoff / nyquist
+            b, a = butter(4, [low, high], btype='bandstop')
+            return b, a
+
+        # Filter out the noise in the frequency domain (40-50 Hz)
+        fs = 1 / (self.dts[1] - self.dts[0])  # Sampling frequency
+        low_cutoff = 47.5  # Lower bound of the mains noise frequency band (40 Hz)
+        high_cutoff = 48.5  # Upper bound of the mains noise frequency band (50 Hz)
+
+        # Apply the filter to the time domain signal (exp_cos_component)
+        b, a = band_stop_filter(self.dts, low_cutoff, high_cutoff, fs)
+
+        # Filter the signal using filtfilt (applies the filter forwards and backwards to avoid phase distortion)
+        exp_cos_component_filtered = np.copy(exp_cos_component)
+        for i in range(exp_cos_component.shape[1]):
+            exp_cos_component_filtered[:, i] = filtfilt(b, a, exp_cos_component[:, i])
+
+        # Plot the filtered signal
+        plt.figure(figsize=(8, 6))
+        plt.plot(self.dts, exp_cos_component_filtered[:, q_idx])
+        plt.xlabel('Time [s]')
+        plt.ylabel('Gamma(t, q_selected) - Filtered')
+        plt.title(f'Renormalized Autocorrelation (Filtered) q = {self.qs[q_idx]} μm$^{{-1}}$')
+        plt.grid(True)
+        plt.show()
+
+        # Step 5: Apply FFT to the filtered time-domain signal: exp(-t q^2 D) cos(q dot v t)
+        ft_exp_cos_component_filtered = np.fft.fft(exp_cos_component_filtered, axis=0)
+        
+        # Shift the Fourier transform for correct ordering
+        ft_exp_cos_component_shifted = np.fft.fftshift(ft_exp_cos_component_filtered, axes=0)
+        
+        # Get temporal frequencies
+        freqs = np.fft.fftfreq(len(self.dts), d=self.dts[1] - self.dts[0])
+        freqs_shifted = np.fft.fftshift(freqs)
+
+        # Step 6: Plot the Fourier transform after filtering
+        ft_exp_cos_component_q_filtered = ft_exp_cos_component_shifted[q_idx, :]
+        abs_spectrum_q_filtered = np.abs(ft_exp_cos_component_q_filtered)
+
+        # Ensure the lengths match
+        if len(freqs_shifted) != len(abs_spectrum_q_filtered):
+            min_len = min(len(freqs_shifted), len(abs_spectrum_q_filtered))
+            freqs_shifted = freqs_shifted[:min_len]
+            abs_spectrum_q_filtered = abs_spectrum_q_filtered[:min_len]
+        
+        # Plot the filtered Fourier transform spectrum
+        plt.figure(figsize=(8, 6))
+        plt.plot(freqs_shifted, abs_spectrum_q_filtered)
+        plt.xlabel('Frequency [Hz]')
+        plt.ylabel('Magnitude of Fourier Transform (Filtered)')
+        plt.title(f'Fourier Transform After Band-Stop Filtering q = {self.qs[q_idx]} μm$^{{-1}}$')
+        plt.grid(True)
+        plt.show()
+
+    def LogISF_2particles(self, p, dts):
+        """
+        Logarithmic form of the ISF function for two particles with different sizes.
+        p[0] = A1 (Amplitude of particle 1)
+        p[1] = A2 (Amplitude of particle 2)
+        p[2] = tau1 (Time constant for particle 1)
+        p[3] = tau2 (Time constant for particle 2)
+        p[4] = B (Baseline term)
+        """
+        A1, A2, tau1, tau2, B = p
+        return np.log(np.maximum(A1 * (1 - np.exp(-dts / tau1)) + A2 * (1 - np.exp(-dts / tau2)) + B, 1e-10))
+
+    def TwoParticleCorrelation(self, ISF, tmax=-1):
+        """
+        Fit the ISF data to the theoretical two-particle ISF function.
+        
+        Args:
+        - ISF: 2D ISF data array
+        - tmax: maximum number of time points to use for the fitting
+        """
+        # Initialize parameter array to store the fitted parameters
+        params = np.zeros((ISF.shape[-1], 5))  # [A1, A2, tau1, tau2, B]
+        for iq, ddm in enumerate(ISF[:tmax].T):
+            # Initial guess for the parameters [A1, A2, tau1, tau2, B]
+            initial_params = [np.ptp(ddm), np.ptp(ddm) * 0.5, 1.0, 2.0, np.mean(ddm)]  # Initial guess
+
+            # Perform least squares fit
+            params[iq] = leastsq(
+                lambda p, dts, logd: self.LogISF_2particles(p, dts) - logd,
+                initial_params,  # Initial guess for parameters
+                args=(self.dts[:tmax], np.log(ddm))  # Data for minimization
+            )[0]
+
+        # Extract tau1 and tau2 (characteristic times for the two particles)
+        tau1_vals = params[:, 2]
+        tau2_vals = params[:, 3]
+
+        # Initialize selection range
+        iqmin, iqmax = 0, len(self.qs) - 1
+
+        # Create plot
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(self.qs, tau1_vals, 'o', label=r"$\tau_1(q)$", color='red')
+        ax.plot(self.qs, tau2_vals, 'o', label=r"$\tau_2(q)$", color='blue')
+        
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel(r'$q\ [\mu m^{-1}]$')
+        ax.set_ylabel(r'Characteristic times $\tau_1, \tau_2\ [s]$')
+        ax.set_title('Click and drag to select a valid range of q values')
+
+        # Annotation for alpha and particle size
+        alpha_text = ax.text(0.05, 0.95, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
+        size_text = ax.text(0.05, 0.90, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
+
+        def onselect(xmin, xmax):
+            nonlocal iqmin, iqmax  # Avoid using global variables
+
+            # Convert selected range to indices
+            iqmin = np.searchsorted(self.qs, xmin)
+            iqmax = min(np.searchsorted(self.qs, xmax), len(self.qs) - 1)  # Prevent out-of-bounds
+
+            print(f"Selected range: {self.qs[iqmin]:.2f} to {self.qs[iqmax]:.2f}")
+
+            # Perform least squares fits for alpha and diameter (size)
+            fit_params_tau1 = leastsq(
+                lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
+                [1, 2],
+                args=(self.qs[iqmin:iqmax], tau1_vals[iqmin:iqmax])
+            )[0]
+            
+            fit_params_tau2 = leastsq(
+                lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
+                [1, 2],
+                args=(self.qs[iqmin:iqmax], tau2_vals[iqmin:iqmax])
+            )[0]
+
+            alpha1 = fit_params_tau1[1]
+            alpha2 = fit_params_tau2[1]
+
+            # Calculate the particle sizes (diameters) for tau1 and tau2
+            D1 = np.exp(-fit_params_tau1[0])  # Diffusion coefficient
+            D2 = np.exp(-fit_params_tau2[0])
+
+            diameter1 = kB * T / (3 * np.pi * mu * D1) * 1e12 * 1e6  # Convert to µm
+            diameter2 = kB * T / (3 * np.pi * mu * D2) * 1e12 * 1e6  # Convert to µm
+
+            # Plot and extract information for the selected range
+            ax.clear()
+            ax.plot(self.qs, tau1_vals, 'o', label=r"$\tau_1(q)$", color='red')
+            ax.plot(self.qs, tau2_vals, 'o', label=r"$\tau_2(q)$", color='blue')
+            ax.axvspan(self.qs[iqmin], self.qs[iqmax], color=(0.9, 0.9, 0.9))  # Highlight selected range
+
+            # Update plot with new selected range
+            ax.legend()
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel(r'$q\ [\mu m^{-1}]$')
+            ax.set_ylabel(r'Characteristic times $\tau_1, \tau_2\ [s]$')
+
+            # Update annotation text with alpha and diameter
+            alpha_text.set_text(rf"$\alpha_1 = {alpha1:.2f}, \alpha_2 = {alpha2:.2f}$")
+            size_text.set_text(rf"Diameter 1 = {diameter1:.2f} µm, Diameter 2 = {diameter2:.2f} µm")
+
+            # Redraw the plot to update the text
+            plt.draw()
+
+        # Enable interactive selection of q range
+        span = SpanSelector(ax, onselect, 'horizontal', useblit=True, interactive=True, props=dict(alpha=0.5, facecolor='red'))
+
+        plt.legend()
+        plt.show()
 
 
 
