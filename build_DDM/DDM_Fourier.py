@@ -341,7 +341,69 @@ class DDM_Fourier:
         """
         A1, A2, tau1, tau2, B = p
         return np.log(np.maximum(A1 * (1 - np.exp(-dts / tau1)) + A2 * (1 - np.exp(-dts / tau2)) + B, 1e-10))
+    
+    def compute_viscoelastic_moduli(self, ISF, q_selected: float=1.):
 
+            if not hasattr(self, 'isf') or not hasattr(self, 'dts'):
+                raise ValueError("ISF and dts must be calculated first. Run calculate_isf() method.")
+            
+            q_index = np.argmin(np.abs(self.qs - q_selected))
+            q_val = self.qs[q_index]
+            
+            B_q = ISF[0, :]
+            A_q = ISF[-1, :] - B_q
+
+            ISF_normalised = (ISF - B_q) / A_q
+
+            f_qs = 1 - ISF_normalised
+            f = f_qs[:, q_index]
+
+            # Compute MSD from f(q,τ) = exp(-1/q^2 MSD)
+            msd = - 1/(q_val**2) * np.log(f)
+
+            msd = msd[np.isfinite(msd)]
+
+            print(f"MSD = {msd}")
+
+            # Perform FFT on MSD to get frequency domain representation
+            msd_fft = np.fft.fft(msd)
+
+            # Generate frequency array corresponding to the FFT output
+            dt = self.dts[1] - self.dts[0]  # Assuming uniform time spacing
+            freqs = np.fft.fftfreq(len(msd), dt)  # Frequencies in Hz
+
+            # Convert frequency (Hz) to omega (rad/s)
+            omega = 2 * np.pi * freqs
+
+            # We want to ignore negative frequencies in the FFT result
+            positive_freqs = freqs > 0
+            msd_fft = msd_fft[positive_freqs]
+            omega = omega[positive_freqs]
+
+            # G*(omega) = 2 * kB * T / (pi * a * omega * F_s) (for viscoelastic modulus)
+            # Here we compute the real and imaginary components
+            G_star = 2 * kB * T / (np.pi * self.particle_size * omega * msd_fft)
+
+            G_prime = np.real(G_star)  # Storage modulus (real part)
+            G_doubleprime = np.imag(G_star)  # Loss modulus (imaginary part)
+
+            print(f"Frequency (omega): {omega[:10]}")
+            print(f"G' (Storage modulus) [first 10 values]: {G_prime[:10]}")
+            print(f"G'' (Loss modulus) [first 10 values]: {G_doubleprime[:10]}")
+
+            # Plotting the results
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.plot(omega, G_prime, label=r"$G'(\omega)$ (Storage Modulus)")
+            ax.plot(omega, G_doubleprime, label=r"$G''(\omega)$ (Loss Modulus)")
+            
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel(r'$\omega$ (rad/s)')
+            ax.set_ylabel(r'$G(\omega)$')
+            ax.legend()
+            plt.grid(True)
+            plt.show()
+            
     def TwoParticleCorrelation(self, ISF, tmax=-1):
         """
         Fit the ISF data to the theoretical two-particle ISF function.
