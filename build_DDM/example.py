@@ -5,9 +5,7 @@ import os
 os.environ['OPENCV_LOG_LEVEL'] = 'FATAL'
 os.environ['OPENCV_FFMPEG_LOGLEVEL'] = "-8"
 
-import cv2
-
-filepath = r"C:\Users\Demonstrators\Desktop\DDM_E2b\github_clone\python\Data\2_test.avi"
+filepath = r"C:\Users\Demonstrators\Desktop\DDM_E2b\github_clone\python\Data\ballistic_10s\2micron_x10.avi"
 
 # video = cv2.VideoCapture(filepath)
 
@@ -16,7 +14,7 @@ filepath = r"C:\Users\Demonstrators\Desktop\DDM_E2b\github_clone\python\Data\2_t
 # else:
 #     print("Video opened successfully")
 
-pixel_size = 0.396
+pixel_size = 0.229
 example = DDM_Fourier(filepath=filepath, pixel_size=pixel_size, particle_size=0.75)
 
 # number of points to sample between each power of 10 in time intervals
@@ -31,6 +29,10 @@ example.calculate_isf(idts, maxNCouples, plot_heat_map=False)
 
 ISF = example.isf
 
-# example.BrownianCorrelation(ISF)
+example.FFT_temporal(ISF, q_selected=0.7)
 
-example.BallisticCorrelation(ISF)
+# example.BrownianCorrelation(ISF, beta_guess=1.)
+
+# example.BrownianCorrelationSubDiffusive(ISF, q_fixed=1)
+
+# example.TwoParticleCorrelation(ISF)
