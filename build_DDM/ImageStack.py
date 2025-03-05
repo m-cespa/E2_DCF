@@ -50,22 +50,25 @@ class ImageStack:
             return image.mean(axis=2).astype(int)
         self.shape = self[0].shape
     
-    def pre_load_stack(self):
+    def pre_load_stack(self, renormalise=False):
         """Load all frames into a numpy array which is pickleable."""
         # load the first frame to determine whether it is RGB or grayscale
         first_frame = self[0]
 
         # handle grayscale or RGB frames (2 or 3 dimensions)
         if len(first_frame.shape) == 2:  # Grayscale
-            frames = np.zeros((self.frame_count, *first_frame.shape), dtype=np.uint8)
+            frames = np.zeros((self.frame_count, *first_frame.shape), dtype=np.float32)
         elif len(first_frame.shape) == 3:  # RGB
-            frames = np.zeros((self.frame_count, *first_frame.shape), dtype=np.uint8)
+            frames = np.zeros((self.frame_count, *first_frame.shape), dtype=np.float32)
         else:
             raise ValueError(f"Unsupported frame shape: {first_frame.shape}")
 
         # load all frames into the pre-constructed array
         for i in tqdm(range(self.frame_count), desc="Pre-loading frames", unit="frame"):
-            frames[i] = self[i]
+            if renormalise:
+                frames[i] = self[i] / (np.mean(self[i]))
+            else:
+                frames[i] = self[i]
             
         return frames
     

@@ -1,9 +1,11 @@
 from DDM_Fourier import DDM_Fourier
 
-filepath = "mixed_brownian/M1.avi"
+filepath = "ballistic_3s/0.5_v=2.96.avi"
 
 pixel_size = 0.229
-example = DDM_Fourier(filepath=filepath, pixel_size=pixel_size, particle_size=0.75)
+example = DDM_Fourier(filepath=filepath, pixel_size=pixel_size, particle_size=0.75, renormalise=True)
+
+print(example.frames[0])
 
 # number of points to sample between each power of 10 in time intervals
 pointsPerDecade = 60
@@ -17,10 +19,10 @@ example.calculate_isf(idts, maxNCouples, plot_heat_map=False)
 
 ISF = example.isf
 
-# example.FFT_temporal(ISF, q_selected=0.7)
+example.FFT_temporal(ISF, q_selected=0.7)
 
 # example.BrownianCorrelation(ISF, beta_guess=1.)
 
-# example.BrownianCorrelationSubDiffusive(ISF, q_fixed=1.5)
+# example.BrownianCorrelationSubDiffusive(ISF, q_fixed=1.)
 
-example.TwoParticleCorrelation(ISF, bottom=0., top=100.)
+# example.TwoParticleCorrelation(ISF, bottom=0., top=100.)

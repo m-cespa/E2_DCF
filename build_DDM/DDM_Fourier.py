@@ -35,11 +35,11 @@ class RadialAverager(object):
         return hw/self.hd
     
 class DDM_Fourier:
-    def __init__(self, filepath: str, pixel_size: float, particle_size: float):
+    def __init__(self, filepath: str, pixel_size: float, particle_size: float, renormalise=False):
         # create the stack attribute
         self.stack = ImageStack(filepath)
         # create the numpy array preloaded stack attribute
-        self.frames = self.stack.pre_load_stack()
+        self.frames = self.stack.pre_load_stack(renormalise=renormalise)
 
         self.pixel_size = pixel_size
         self.particle_size = particle_size
@@ -161,7 +161,7 @@ class DDM_Fourier:
             )[0]
 
         # initialize selection range
-        iqmin, iqmax = 0, len(self.qs) - 1
+        iqmin, iqmax = 0, self.qs.size - 1
 
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.plot(self.qs, params[:, 2], 'o', label="Data")
@@ -241,33 +241,26 @@ class DDM_Fourier:
         Identifies peaks above a threshold value and calculates <v_terminal> for each peak, 
         then averages the velocities and prints the result.
         """
-        # Step 1: Extract B(q) from the t = 0 intercept for each q
-        B_q = ISF[0, :]  # ISF at t=0 gives B(q) for each q
-        
-        # Step 2: Extract A(q) using the long-time behavior
-        A_q = ISF[-1, :] - B_q  # Assuming ISF(t -> infinity) is approximated by ISF at large t
-        
-        # Step 3: Recover 1 - (ISF - B(q)) / A(q)
-        ISF_normalized = (ISF - B_q) / A_q  # Normalized ISF without the static component
-        
-        # Step 4: Calculate exp(-t q^2 D) cos(q dot v t) by 1 - the normalized ISF
-        exp_cos_component = 1 - ISF_normalized  # This is exp(-t q^2 D) cos(q dot v t)
+        B_q = ISF[0, :]
+        A_q = ISF[-1, :] - B_q
+        ISF_normalized = (ISF - B_q) / A_q
 
-        # Get the index of the smallest non-zero q
+        # γ(q,t) ~ exp(-t q^2 D) cos(q dot v t)
+        exp_cos_component = 1 - ISF_normalized
+
         q_idx = np.argmin(np.abs(self.qs - q_selected))
 
-        # Plot the original renormalized autocorrelation
         plt.figure(figsize=(8, 6))
         plt.plot(self.dts, exp_cos_component[:, q_idx])
         plt.xlabel('Time [s]')
-        plt.ylabel('Gamma(t, q_selected)')
-        plt.title(f'Renormalized Autocorrelation q = {self.qs[q_idx]} μm$^{{-1}}$')
+        plt.ylabel('γ(q,t)')
+        plt.title(f'γ(q,t) q = {self.qs[q_idx]} μm$^{{-1}}$')
         plt.grid(True)
         plt.show()
         
-        # Band-stop filter design (40-50 Hz for mains noise)
+        # band-stop filter design (40-50 Hz for mains noise)
         def band_stop_filter(dts, low_cutoff, high_cutoff, fs):
-            # Design a band-stop filter using butterworth
+            # design a band-stop filter using butterworth
             nyquist = 0.5 * fs
             low = low_cutoff / nyquist
             high = high_cutoff / nyquist
@@ -291,8 +284,8 @@ class DDM_Fourier:
         plt.figure(figsize=(8, 6))
         plt.plot(self.dts, exp_cos_component_filtered[:, q_idx])
         plt.xlabel('Time [s]')
-        plt.ylabel('Gamma(t, q_selected) - Filtered')
-        plt.title(f'Renormalized Autocorrelation (Filtered) q = {self.qs[q_idx]} μm$^{{-1}}$')
+        plt.ylabel('γ(q,t)')
+        plt.title(f'γ(q,t) - Filtered q = {self.qs[q_idx]} μm$^{{-1}}$')
         plt.grid(True)
         plt.show()
 
@@ -316,7 +309,6 @@ class DDM_Fourier:
             freqs_shifted = freqs_shifted[:min_len]
             abs_spectrum_q_filtered = abs_spectrum_q_filtered[:min_len]
         
-        # Plot the filtered Fourier transform spectrum
         plt.figure(figsize=(8, 6))
         plt.plot(freqs_shifted, abs_spectrum_q_filtered)
         plt.xlabel('Frequency [Hz]')
