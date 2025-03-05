@@ -129,7 +129,7 @@ class DDM_Fourier:
         dts = idts / self.fps
         self.dts = dts
 
-        # if plotting feature is enabled, a heatmap will be graphed
+        # if plotting feature is enabled, a heatmap will be produced
         if plot_heat_map:
 
             plt.figure(figsize=(5,5))
@@ -155,15 +155,14 @@ class DDM_Fourier:
         params = np.zeros((ISF.shape[-1], 3))
         for iq, ddm in enumerate(ISF[:tmax].T):
             params[iq] = leastsq(
-                lambda p, dts, logd: LogISF(p, dts) - logd,  # Function to minimize
-                [np.ptp(ISF), ddm.min(), 1],  # initial parameter values (p to sub into LogISF)
-                args=(self.dts[:tmax], np.log(ddm))  # Data on which to perform minimization
+                lambda p, dts, logd: LogISF(p, dts) - logd,
+                [np.ptp(ISF), ddm.min(), 1],
+                args=(self.dts[:tmax], np.log(ddm))
             )[0]
 
-        # Initialize selection range
+        # initialize selection range
         iqmin, iqmax = 0, len(self.qs) - 1
 
-        # Create plot
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.plot(self.qs, params[:, 2], 'o', label="Data")
         ax.set_xscale('log')
@@ -172,71 +171,67 @@ class DDM_Fourier:
         ax.set_ylabel(r'Characteristic time $\tau_c\ [s]$')
         ax.set_title('Click and drag to select a valid range of q values')
 
-        # Annotation for alpha and diameter
         alpha_text = ax.text(0.05, 0.95, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
         diameter_text = ax.text(0.05, 0.90, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
 
         def onselect(xmin, xmax):
-            nonlocal iqmin, iqmax  # Avoid using global variables
+            nonlocal iqmin, iqmax
 
-            # Convert selected range to indices
+            # convert selected range to indices
             iqmin = np.searchsorted(self.qs, xmin)
-            iqmax = min(np.searchsorted(self.qs, xmax), len(self.qs) - 1)  # Prevent out-of-bounds
+            iqmax = min(np.searchsorted(self.qs, xmax), len(self.qs) - 1)
 
             print(f"Selected range: {self.qs[iqmin]:.2f} to {self.qs[iqmax]:.2f}")
 
-            # Perform least squares fits for α and D
+            # perform least squares fits for α and D
             fit_params = leastsq(
                 lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
-                [1, 2], # initial parameter guesses for log(D) and alpha
-                args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2]) # params[:, 2] is Dq^2 fit
+                [30, 2], # initial parameter guesses for log(D) and alpha
+                args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2])
             )[0]
             alpha = fit_params[1]
 
             D = np.exp(-leastsq(
                 lambda p, q, td: p[0] - 2 * np.log(q) - np.log(td),
-                [-1.],
+                [13],
                 args=(self.qs[iqmin:iqmax], params[iqmin:iqmax, 2])
             )[0][0])
 
-            # Calculate diameter
-            predicted_a = kB * T / (3 * np.pi * mu * D) * 1e12 * 1e6  # Convert to µm
+            # calculate diameter in µm
+            predicted_a = kB * T / (3 * np.pi * mu * D) * 1e12 * 1e6
 
-            # Update annotation text
             alpha_text.set_text(rf"$\alpha = {alpha:.2f}$")
             diameter_text.set_text(rf"Diameter = {predicted_a:.2f} µm")
 
-            # Redraw the plot to update the text
             plt.draw()
 
-        # Enable interactive selection
+        # enable interactive selection
         span = SpanSelector(ax, onselect, 'horizontal', useblit=True, interactive=True, props=dict(alpha=0.5, facecolor='red'))
 
         plt.legend()
         plt.show()
 
-    def BrownianCorrelationSubDiffusive(self, ISF, tmax=-1, q_fixed:float=1.):
+    def BrownianCorrelationSubDiffusive(self, ISF, q_fixed:float=1.):
+        """
+        Extracts the autocorrelation (γ(q, t) function by reducing the ISF.
+        For sub-diffusive motion, <x(t)^2> ~ t^β for 0 < β < 1.
+            γ(q, t) ~ exp[-<x(t)^2>q^2]
+        We expect that plotting γ(t) on logarithmic y-axis will NOT be linear.
+        """
         B_q = ISF[0, :]
         A_q = ISF[-1, :] - B_q
         ISF_normalized = (ISF - B_q) / A_q
         autocorrelation = 1 - ISF_normalized
 
-        log_log_auto = np.log(-np.log(autocorrelation))
-        
-        # Find the closest index corresponding to the selected q_fixed
-        q_index = np.argmin(np.abs(self.qs - q_fixed))
-        log_log_auto_q = log_log_auto[:, q_index]
+        q_idx = np.argmin(np.abs(self.qs - q_fixed))
+        autocorr_q_idx = autocorrelation[:, q_idx]
                 
-        # Plot log_auto vs time on a logarithmic axis
         plt.figure(figsize=(8, 6))
-        plt.plot(self.dts[:tmax], log_log_auto_q[:tmax], label=f"q = {self.qs[q_index]:.2f} µm⁻¹", color='blue')
-                
-        # Set the plot labels and title
-        plt.xlabel('log(t)')
-        plt.ylabel('log(log(Autocorrelation))')
-        plt.title(f'log(log(gamma)) vs log(t) for q = {self.qs[q_index]:.2f} µm⁻¹')
-        
-        # Display the plot
+        plt.plot(self.dts, autocorr_q_idx[:self.dts.size], label=f"q = {self.qs[q_idx]:.2f} µm⁻¹")
+        plt.yscale('log')
+        plt.xlabel('Time [s]')
+        plt.ylabel('γ(t)')
+        plt.title(f'γ(q, t) for q = {self.qs[q_idx]:.2f} µm⁻¹')
         plt.legend()
         plt.show()
 
@@ -329,7 +324,7 @@ class DDM_Fourier:
         plt.title(f'Fourier Transform After Band-Stop Filtering q = {self.qs[q_idx]} μm$^{{-1}}$')
         plt.grid(True)
         plt.show()
-
+    
     def LogISF_2particles(self, p, dts):
         """
         Logarithmic form of the ISF function for two particles with different sizes.
@@ -341,101 +336,52 @@ class DDM_Fourier:
         """
         A1, A2, tau1, tau2, B = p
         return np.log(np.maximum(A1 * (1 - np.exp(-dts / tau1)) + A2 * (1 - np.exp(-dts / tau2)) + B, 1e-10))
-    
-    def compute_viscoelastic_moduli(self, ISF, q_selected: float=1.):
-
-            if not hasattr(self, 'isf') or not hasattr(self, 'dts'):
-                raise ValueError("ISF and dts must be calculated first. Run calculate_isf() method.")
             
-            q_index = np.argmin(np.abs(self.qs - q_selected))
-            q_val = self.qs[q_index]
-            
-            B_q = ISF[0, :]
-            A_q = ISF[-1, :] - B_q
-
-            ISF_normalised = (ISF - B_q) / A_q
-
-            f_qs = 1 - ISF_normalised
-            f = f_qs[:, q_index]
-
-            # Compute MSD from f(q,τ) = exp(-1/q^2 MSD)
-            msd = - 1/(q_val**2) * np.log(f)
-
-            msd = msd[np.isfinite(msd)]
-
-            print(f"MSD = {msd}")
-
-            # Perform FFT on MSD to get frequency domain representation
-            msd_fft = np.fft.fft(msd)
-
-            # Generate frequency array corresponding to the FFT output
-            dt = self.dts[1] - self.dts[0]  # Assuming uniform time spacing
-            freqs = np.fft.fftfreq(len(msd), dt)  # Frequencies in Hz
-
-            # Convert frequency (Hz) to omega (rad/s)
-            omega = 2 * np.pi * freqs
-
-            # We want to ignore negative frequencies in the FFT result
-            positive_freqs = freqs > 0
-            msd_fft = msd_fft[positive_freqs]
-            omega = omega[positive_freqs]
-
-            # G*(omega) = 2 * kB * T / (pi * a * omega * F_s) (for viscoelastic modulus)
-            # Here we compute the real and imaginary components
-            G_star = 2 * kB * T / (np.pi * self.particle_size * omega * msd_fft)
-
-            G_prime = np.real(G_star)  # Storage modulus (real part)
-            G_doubleprime = np.imag(G_star)  # Loss modulus (imaginary part)
-
-            print(f"Frequency (omega): {omega[:10]}")
-            print(f"G' (Storage modulus) [first 10 values]: {G_prime[:10]}")
-            print(f"G'' (Loss modulus) [first 10 values]: {G_doubleprime[:10]}")
-
-            # Plotting the results
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.plot(omega, G_prime, label=r"$G'(\omega)$ (Storage Modulus)")
-            ax.plot(omega, G_doubleprime, label=r"$G''(\omega)$ (Loss Modulus)")
-            
-            ax.set_xscale('log')
-            ax.set_yscale('log')
-            ax.set_xlabel(r'$\omega$ (rad/s)')
-            ax.set_ylabel(r'$G(\omega)$')
-            ax.legend()
-            plt.grid(True)
-            plt.show()
-            
-    def TwoParticleCorrelation(self, ISF, tmax=-1):
+    def TwoParticleCorrelation(self, ISF, bottom:float=0., top:float=50., tmax=-1):
         """
         Fit the ISF data to the theoretical two-particle ISF function.
         
         Args:
-        - ISF: 2D ISF data array
-        - tmax: maximum number of time points to use for the fitting
+            ISF: 2D ISF data array shape len(times) x len(qs)
+            bottom: bottom limit to set for filtering taus
+            top: top limit to set for filtering taus
+            tmax: maximum number of time points to use for the fitting
         """
-        # Initialize parameter array to store the fitted parameters
+        # initialise fit parameter array
+        # dims: len(qs) x 5 (each column stores a parameter through all q)
         params = np.zeros((ISF.shape[-1], 5))  # [A1, A2, tau1, tau2, B]
-        for iq, ddm in enumerate(ISF[:tmax].T):
-            # Initial guess for the parameters [A1, A2, tau1, tau2, B]
-            initial_params = [np.ptp(ddm), np.ptp(ddm) * 0.5, 1.0, 2.0, np.mean(ddm)]  # Initial guess
 
-            # Perform least squares fit
+        # for each q we extract ISF(t) here labelled "ddm"
+        for iq, ddm in enumerate(ISF[:tmax].T):
+            # initial guess for parameters [A1, A2, tau1, tau2, B]
+            initial_params = [np.ptp(ddm), np.ptp(ddm) * 0.5, 1.0, 2.0, np.mean(ddm)]
+
+            # perform least squares fit at current q value
+            # least squares will optimise [A1, A2, tau1, tau2, B]
+            # to minimise difference between log(ISF)_observed & log(ISF)_fit
             params[iq] = leastsq(
                 lambda p, dts, logd: self.LogISF_2particles(p, dts) - logd,
-                initial_params,  # Initial guess for parameters
-                args=(self.dts[:tmax], np.log(ddm))  # Data for minimization
+                initial_params,
+                args=(self.dts[:tmax], np.log(ddm))
             )[0]
 
-        # Extract tau1 and tau2 (characteristic times for the two particles)
+        # retrieve the tau parameters for all q
         tau1_vals = params[:, 2]
         tau2_vals = params[:, 3]
+        
 
-        # Initialize selection range
-        iqmin, iqmax = 0, len(self.qs) - 1
+        # apply mask to remove erroneously large or negative q values
+        valid_indices = ((tau1_vals >= bottom) & (tau1_vals <= top)) & ((tau2_vals >= bottom) & (tau2_vals <= top))
+        tau1_filtered = tau1_vals[valid_indices]
+        tau2_filtered = tau2_vals[valid_indices]
+        qs_filtered   = self.qs[valid_indices]
 
-        # Create plot
+        # graph selection range
+        iqmin, iqmax = 0, qs_filtered.size - 1
+
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.plot(self.qs, tau1_vals, 'o', label=r"$\tau_1(q)$", color='red')
-        ax.plot(self.qs, tau2_vals, 'o', label=r"$\tau_2(q)$", color='blue')
+        ax.plot(qs_filtered, tau1_filtered, 'o', label=r"$\tau_1(q)$", color='red')
+        ax.plot(qs_filtered, tau2_filtered, 'o', label=r"$\tau_2(q)$", color='blue')
         
         ax.set_xscale('log')
         ax.set_yscale('log')
@@ -443,67 +389,110 @@ class DDM_Fourier:
         ax.set_ylabel(r'Characteristic times $\tau_1, \tau_2\ [s]$')
         ax.set_title('Click and drag to select a valid range of q values')
 
-        # Annotation for alpha and particle size
-        alpha_text = ax.text(0.05, 0.95, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
-        size_text = ax.text(0.05, 0.90, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
-
         def onselect(xmin, xmax):
-            nonlocal iqmin, iqmax  # Avoid using global variables
+            nonlocal iqmin, iqmax
 
-            # Convert selected range to indices
-            iqmin = np.searchsorted(self.qs, xmin)
-            iqmax = min(np.searchsorted(self.qs, xmax), len(self.qs) - 1)  # Prevent out-of-bounds
+            # convert selected range to indices
+            iqmin = np.searchsorted(qs_filtered, xmin)
+            iqmax = min(np.searchsorted(qs_filtered, xmax), qs_filtered.size - 1)
 
-            print(f"Selected range: {self.qs[iqmin]:.2f} to {self.qs[iqmax]:.2f}")
+            print(f"Selected range: {qs_filtered[iqmin]:.2f} to {qs_filtered[iqmax]:.2f}")
 
-            # Perform least squares fits for alpha and diameter (size)
+            # perform least squares fits for alpha and diameter
+            # expect tau = 1 / Dq^2 -> log(tau) = -log(D) - 2log(q)
+            # p[0] is fitting for -log(D)
+            # p[1] is fitting for 2 (alpha)
             fit_params_tau1 = leastsq(
                 lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
-                [1, 2],
-                args=(self.qs[iqmin:iqmax], tau1_vals[iqmin:iqmax])
+                [30, 2],
+                args=(qs_filtered[iqmin:iqmax], tau1_filtered[iqmin:iqmax])
             )[0]
             
             fit_params_tau2 = leastsq(
                 lambda p, q, td: p[0] - p[1] * np.log(np.abs(q)) - np.log(np.abs(td)),
-                [1, 2],
-                args=(self.qs[iqmin:iqmax], tau2_vals[iqmin:iqmax])
+                [30, 2],
+                args=(qs_filtered[iqmin:iqmax], tau2_filtered[iqmin:iqmax])
             )[0]
+
+            # fit the Diffusivities by enforcing alpha = 2
+            D1 = np.exp(-leastsq(
+                lambda p, q, td: p[0] - 2 * np.log(q) - np.log(td),
+                [13.],
+                args=(qs_filtered[iqmin:iqmax], tau1_filtered[iqmin:iqmax])
+            )[0][0])
+
+            D2 = np.exp(-leastsq(
+                lambda p, q, td: p[0] - 2 * np.log(q) - np.log(td),
+                [13.],
+                args=(qs_filtered[iqmin:iqmax], tau2_filtered[iqmin:iqmax])
+            )[0][0])
 
             alpha1 = fit_params_tau1[1]
             alpha2 = fit_params_tau2[1]
 
-            # Calculate the particle sizes (diameters) for tau1 and tau2
-            D1 = np.exp(-fit_params_tau1[0])  # Diffusion coefficient
-            D2 = np.exp(-fit_params_tau2[0])
+            # diameters calculated in μm
+            diameter1 = kB * T / (3 * np.pi * mu * D1) * 1e12 * 1e6
+            diameter2 = kB * T / (3 * np.pi * mu * D2) * 1e12 * 1e6
 
-            diameter1 = kB * T / (3 * np.pi * mu * D1) * 1e12 * 1e6  # Convert to µm
-            diameter2 = kB * T / (3 * np.pi * mu * D2) * 1e12 * 1e6  # Convert to µm
-
-            # Plot and extract information for the selected range
+            # plot data with scrollable range selection
             ax.clear()
-            ax.plot(self.qs, tau1_vals, 'o', label=r"$\tau_1(q)$", color='red')
-            ax.plot(self.qs, tau2_vals, 'o', label=r"$\tau_2(q)$", color='blue')
-            ax.axvspan(self.qs[iqmin], self.qs[iqmax], color=(0.9, 0.9, 0.9))  # Highlight selected range
+            ax.plot(qs_filtered, tau1_filtered, 'o', label=r"$\tau_1(q)$", color='red')
+            ax.plot(qs_filtered, tau2_filtered, 'o', label=r"$\tau_2(q)$", color='blue')
+            ax.axvspan(qs_filtered[iqmin], qs_filtered[iqmax], color=(0.9, 0.9, 0.9))
 
-            # Update plot with new selected range
-            ax.legend()
+            # reapply axis settings
             ax.set_xscale('log')
             ax.set_yscale('log')
             ax.set_xlabel(r'$q\ [\mu m^{-1}]$')
             ax.set_ylabel(r'Characteristic times $\tau_1, \tau_2\ [s]$')
+            ax.set_title('Click and drag to select a valid range of q values')
 
-            # Update annotation text with alpha and diameter
-            alpha_text.set_text(rf"$\alpha_1 = {alpha1:.2f}, \alpha_2 = {alpha2:.2f}$")
-            size_text.set_text(rf"Diameter 1 = {diameter1:.2f} µm, Diameter 2 = {diameter2:.2f} µm")
+            # recreate annotation text objects with updated values
+            ax.text(0.05, 0.95, rf"$\alpha_1 = {alpha1:.2f}, \alpha_2 = {alpha2:.2f}$",
+                    transform=ax.transAxes, fontsize=12, verticalalignment='top')
+            ax.text(0.05, 0.90, rf"Diameter 1 = {diameter1:.2f} µm, Diameter 2 = {diameter2:.2f} µm",
+                    transform=ax.transAxes, fontsize=12, verticalalignment='top')
 
-            # Redraw the plot to update the text
+            ax.legend()
             plt.draw()
 
-        # Enable interactive selection of q range
+        # enable interactive selection of q range
         span = SpanSelector(ax, onselect, 'horizontal', useblit=True, interactive=True, props=dict(alpha=0.5, facecolor='red'))
 
         plt.legend()
         plt.show()
 
+        # we theorise that the ratio of A1(q) : A2(q) corresponds to the concentrations
+        conc_ratio = np.mean(params[:, 0] / params[:, 1])
+        print(f"\nRecovered concentration ratio from A1(q)/A2(q) = {conc_ratio}")
 
+        # plot for a selected value the reduced ISF
 
+        B_q = ISF[0, :]
+        ISF_reduced = ISF - B_q
+
+        q_value = float(input("\nPlease enter a q value within the previously selected range: "))
+
+        q_idx = np.argmin(np.abs(self.qs - q_value))
+        
+        dts_plot = self.dts[:tmax]
+        ISF_measured = ISF_reduced[:tmax, q_idx]
+        
+        # retrieve fit parameters from before
+        A1, A2, tau1, tau2, _ = params[q_idx, :]
+        
+        # compute reduced ISF using fit parameters
+        # ISF_model(t) = A1 * (1 - exp(-t/tau1)) + A2 * (1 - exp(-t/tau2))
+        fitted_curve = A1 * (1 - np.exp(-dts_plot / tau1)) + A2 * (1 - np.exp(-dts_plot / tau2))
+        
+        plt.figure(figsize=(8, 6))
+        plt.plot(dts_plot, ISF_measured, 'o', label='Reduced ISF data', color='blue')
+        plt.plot(dts_plot, fitted_curve, '-', label='Fitted curve', color='red')
+        plt.xlabel('Time [s]')
+        plt.ylabel('Reduced ISF')
+        plt.title(rf'Reduced ISF at $q = {self.qs[q_idx]:.2f}\ \mu m^{{-1}}$')
+        plt.legend(loc='center right')
+        plt.text(0.95, 0.05, 
+         rf"$\tau_1 = {round(tau1,2)}\,\mathrm{{s}} \mid \tau_2 = {round(tau2,2)}\,\mathrm{{s}}$", 
+         ha='right', va='bottom', transform=plt.gca().transAxes)
+        plt.show()
