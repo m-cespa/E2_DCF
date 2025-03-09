@@ -6,11 +6,25 @@ import os
 import re
 import csv
 
+kB = 1.38e-23
+visc = 8.9e-4
+T = 300
+
 class DLS:
     def __init__(self, dir: str, noise_freq: float=100.):
         self.dir = dir
         self.noise_freq = noise_freq
         self.tau_vals = []
+
+        self.relative_q_errors = {
+            '26.6': 0.057,
+            '30.0': 0.05,
+            '35.0': 0.037,
+            '40.0': 0.029,
+            '45.0': 0.024,
+            '48.0': 0.02,
+            '50.0': 0.019
+        }
 
         # set sampling frequency
         for entry in os.scandir(dir):
@@ -61,15 +75,24 @@ class DLS:
                 y = np.log(ac[:lin_range])
 
                 slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-                tau = -1 / slope
+                tau = -2 / slope
 
                 # calculate error in tau from std
-                error_tau = abs(1 / slope**2) * std_err
+                tau_error = abs(2 / slope**2) * std_err
+
+                degree = self.extract_degree_from_filename(filename)
+                relative_q_error = self.relative_q_errors[degree]
+                q = (4 * np.pi * np.sin(np.radians(float(degree)) / 2)) / (635e-9)
+
+                # tau is in ms, calculating a in m first, convert to μm after
+                particle_size = (kB * T * tau * 1e-3 * q**2) / (3 * np.pi * visc)
+
+                size_error = np.sqrt((tau_error / tau)**2 + (2 * relative_q_error)**2) * particle_size
 
                 # extract degree from the filename
                 degree = self.extract_degree_from_filename(filename)
                 if degree is not None:
-                    self.tau_vals.append((degree, tau, error_tau))
+                    self.tau_vals.append((degree, tau, tau_error, particle_size * 1e6, size_error * 1e6))
 
                 # plot results on log scale
                 plt.figure(figsize=(10, 6))
@@ -99,52 +122,10 @@ class DLS:
         # save tau values and associated errors to csv
         with open(csv_filename, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['Degree', 'Tau', 'Error'])
+            writer.writerow([' Degree ° ', ' τ (ms) ', ' Δτ ', ' a (μm) ', ' Δa '])
             writer.writerows(self.tau_vals)
         print(f"Tau values and errors have been saved to '{csv_filename}'")
 
-    def q_and_error(self):
-        """
-        Function to calculate q values and errors.
-        """
-        q_vals = []
-        error_q_vals = []
-
-        for entry in os.scandir(self.dir):
-            if entry.is_file():
-                filename = entry.path
-                # extract numerical angle value from filename
-                match = re.search(r'(\d+\.\d+)deg', filename)
-                if match:
-                    a = float(match.group(1))
-                    q_vals.append(a)
-                    
-                    
-                    # FILL WITH ERROR CALCULATION FOR Q
-
-
-                    # example error calc
-                    error_q_vals.append(a * 0.1)
-                else:
-                    print(f"Filename {filename} does not match the expected pattern.")
-
-        return q_vals, error_q_vals
-
-    def compute_sin_error(self, a, del_a, b, del_b):
-        """
-        Calculate sin of angle and associated error.
-        """
-        theta = np.arctan(a / b)
-        del_theta = np.sqrt((a * del_b)**2 + (b * del_a)**2) / (a**2 + b**2)
-        sin = np.sin(0.5 * theta)
-        del_sin = 0.5 * np.cos(0.5 * theta) * del_theta
-        return sin, del_sin
-
 # Example usage of the class
-dls = DLS('DLS_files/0.75micro_100dil')
+dls = DLS('DLS_files/0.50micro_1000dil')
 dls.AutoCorrelation()  # Computes autocorrelation and saves tau and errors to CSV
-
-# If you also want to calculate q and errors, use:
-q_vals, error_q_vals = dls.q_and_error()
-print(f"Q values: {q_vals}")
-print(f"Error in Q values: {error_q_vals}")
